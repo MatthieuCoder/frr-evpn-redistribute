@@ -509,9 +509,8 @@ int zsend_interface_update(int cmd, struct zserv *client, struct interface *ifp)
 	return zserv_send_message(client, s);
 }
 
-int zsend_redistribute_route(int cmd, struct zserv *client,
-			     const struct route_node *rn,
-			     const struct route_entry *re, bool is_table_direct)
+int zsend_redistribute_route(int cmd, struct zserv *client, const struct route_node *rn,
+			     const struct route_entry *re, vrf_id_t *to_vrf)
 {
 	struct zapi_route api;
 	struct zapi_nexthop *api_nh;
@@ -527,9 +526,10 @@ int zsend_redistribute_route(int cmd, struct zserv *client,
 	api.vrf_id = re->vrf_id;
 	api.type = re->type;
 	api.safi = SAFI_UNICAST;
-	if (is_table_direct) {
+	if (to_vrf != NULL) {
 		api.instance = re->table;
 		api.type = ZEBRA_ROUTE_TABLE_DIRECT;
+		api.vrf_id = *to_vrf;
 	} else
 		api.instance = re->instance;
 	api.flags = re->flags;
@@ -598,7 +598,7 @@ int zsend_redistribute_route(int cmd, struct zserv *client,
 
 	/* Attributes. */
 	SET_FLAG(api.message, ZAPI_MESSAGE_DISTANCE);
-	if (is_table_direct)
+	if (to_vrf != NULL)
 		api.distance = ZEBRA_TABLEDIRECT_DISTANCE_DEFAULT;
 	else
 		api.distance = re->distance;
@@ -740,6 +740,10 @@ static int route_notify_internal(const struct route_node *rn, int type,
 	struct zserv *client;
 	struct stream *s;
 	uint8_t blen;
+	const struct prefix *p, *src_p;
+	struct prefix src_dummy = {};
+
+	srcdest_rnode_prefixes(rn, &p, &src_p);
 
 	client = zserv_find_client(type, instance);
 	if (!client || !client->notify_owner) {
@@ -771,9 +775,17 @@ static int route_notify_internal(const struct route_node *rn, int type,
 
 	stream_putc(s, rn->p.family);
 
-	blen = prefix_blen(&rn->p);
-	stream_putc(s, rn->p.prefixlen);
-	stream_put(s, &rn->p.u.prefix, blen);
+	blen = prefix_blen(p);
+	stream_putc(s, p->prefixlen);
+	stream_put(s, &p->u.prefix, blen);
+
+	if (!src_p) {
+		src_dummy.family = p->family;
+		src_p = &src_dummy;
+	}
+	blen = prefix_blen(src_p);
+	stream_putc(s, src_p->prefixlen);
+	stream_put(s, &src_p->u.prefix, blen);
 
 	stream_putl(s, table_id);
 

@@ -1295,6 +1295,12 @@ static int netlink_route_change_read_unicast_internal(struct nlmsghdr *h,
 					   flags, &p,
 					   (struct prefix_ipv6 *)&src_p, &nh, 0,
 					   table, metric, distance, true);
+
+				if (nh.nh_label)
+					nexthop_del_labels(&nh);
+
+				if (nh.nh_srv6)
+					nexthop_del_srv6_seg6(&nh);
 			} else {
 				/* XXX: need to compare the entire list of
 				 * nexthops here for NLM_F_APPEND stupidity */
@@ -2588,10 +2594,10 @@ ssize_t netlink_route_multipath_msg_encode(int cmd, struct zebra_dplane_ctx *ctx
 		}
 	}
 
-	if ((!fpm && kernel_nexthops_supported()
-	     && (!proto_nexthops_only()
-		 || is_proto_nhg(dplane_ctx_get_nhe_id(ctx), 0)))
-	    || (fpm && force_nhg)) {
+	if ((!fpm && kernel_nexthops_supported() &&
+	     (!proto_nexthops_only() || is_proto_nhg(dplane_ctx_get_nhe_id(ctx), 0)) &&
+	     (!src_p || !src_p->prefixlen)) ||
+	    (fpm && force_nhg)) {
 		/* Kernel supports nexthop objects */
 		if (IS_ZEBRA_DEBUG_KERNEL)
 			zlog_debug("%s: %pFX nhg_id is %u", __func__, p,

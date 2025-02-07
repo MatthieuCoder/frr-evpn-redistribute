@@ -525,8 +525,9 @@ static void bgp_holdtime_timer(struct event *thread)
 	 * for systems where we are heavily loaded for one
 	 * reason or another.
 	 */
-	inq_count = atomic_load_explicit(&connection->ibuf->count,
-					 memory_order_relaxed);
+	frr_with_mutex (&connection->io_mtx) {
+		inq_count = atomic_load_explicit(&connection->ibuf->count, memory_order_relaxed);
+	}
 	if (inq_count)
 		BGP_TIMER_ON(connection->t_holdtime, bgp_holdtime_timer,
 			     peer->v_holdtime);
@@ -607,6 +608,7 @@ const char *const peer_down_str[] = {
 	"Admin. shutdown (RTT)",
 	"Suppress Fib Turned On or Off",
 	"Password config change",
+	"Router ID is missing",
 };
 
 static void bgp_graceful_restart_timer_off(struct peer_connection *connection,
@@ -2162,6 +2164,9 @@ bgp_establish(struct peer_connection *connection)
 	/* Increment established count. */
 	peer->established++;
 	bgp_fsm_change_status(connection, Established);
+
+	if (peer->last_reset == PEER_DOWN_WAITING_OPEN)
+		peer->last_reset = 0;
 
 	/* bgp log-neighbor-changes of neighbor Up */
 	if (CHECK_FLAG(peer->bgp->flags, BGP_FLAG_LOG_NEIGHBOR_CHANGES)) {

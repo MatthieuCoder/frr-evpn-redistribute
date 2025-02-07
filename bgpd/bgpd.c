@@ -2026,8 +2026,11 @@ struct peer *peer_create(union sockunion *su, const char *conf_if,
 	if (bgp->autoshutdown)
 		peer_flag_set(peer, PEER_FLAG_SHUTDOWN);
 	/* Set up peer's events and timers. */
-	else if (!active && peer_active(peer->connection))
+	else if (!active && peer_active(peer->connection)) {
+		if (peer->last_reset == PEER_DOWN_NOAFI_ACTIVATED)
+			peer->last_reset = 0;
 		bgp_timer_set(peer->connection);
+	}
 
 	bgp_peer_gr_flags_update(peer);
 	BGP_GR_ROUTER_DETECT_AND_SEND_CAPABILITY_TO_ZEBRA(bgp, bgp->peer);
@@ -3985,6 +3988,7 @@ int bgp_delete(struct bgp *bgp)
 	uint32_t a_ann_cnt = 0, a_l2_cnt = 0, a_l3_cnt = 0;
 	struct bgp *bgp_to_proc = NULL;
 	struct bgp *bgp_to_proc_next = NULL;
+	struct bgp *bgp_default = bgp_get_default();
 
 	assert(bgp);
 
@@ -4038,12 +4042,25 @@ int bgp_delete(struct bgp *bgp)
 	bgp_soft_reconfig_table_task_cancel(bgp, NULL, NULL);
 
 	/* make sure we withdraw any exported routes */
-	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP, bgp_get_default(),
-			   bgp);
-	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP6, bgp_get_default(),
-			   bgp);
+	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP, bgp_default, bgp);
+	vpn_leak_prechange(BGP_VPN_POLICY_DIR_TOVPN, AFI_IP6, bgp_default, bgp);
 
 	bgp_vpn_leak_unimport(bgp);
+
+	/*
+	 * Release SRv6 SIDs, like it's done in `vpn_leak_postchange()`
+	 * and bgp_sid_vpn_export_cmd/af_sid_vpn_export_cmd commands.
+	 */
+	bgp->tovpn_sid_index = 0;
+	UNSET_FLAG(bgp->vrf_flags, BGP_VRF_TOVPN_SID_AUTO);
+	delete_vrf_tovpn_sid_per_vrf(bgp_default, bgp);
+	for (afi = AFI_IP; afi < AFI_MAX; afi++) {
+		bgp->vpn_policy[afi].tovpn_sid_index = 0;
+		UNSET_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_SID_AUTO);
+		delete_vrf_tovpn_sid_per_af(bgp_default, bgp, afi);
+
+		vpn_leak_zebra_vrf_sid_withdraw(bgp, afi);
+	}
 
 	bgp_vpn_release_label(bgp, AFI_IP, true);
 	bgp_vpn_release_label(bgp, AFI_IP6, true);
@@ -4820,39 +4837,40 @@ static const struct peer_flag_action peer_flag_action_list[] = {
 	{0, 0, 0}};
 
 static const struct peer_flag_action peer_af_flag_action_list[] = {
-	{PEER_FLAG_SEND_COMMUNITY, 1, peer_change_reset_out},
-	{PEER_FLAG_SEND_EXT_COMMUNITY, 1, peer_change_reset_out},
-	{PEER_FLAG_SEND_LARGE_COMMUNITY, 1, peer_change_reset_out},
-	{PEER_FLAG_NEXTHOP_SELF, 1, peer_change_reset_out},
-	{PEER_FLAG_REFLECTOR_CLIENT, 1, peer_change_reset},
-	{PEER_FLAG_RSERVER_CLIENT, 1, peer_change_reset},
-	{PEER_FLAG_SOFT_RECONFIG, 0, peer_change_reset_in},
-	{PEER_FLAG_AS_PATH_UNCHANGED, 1, peer_change_reset_out},
-	{PEER_FLAG_NEXTHOP_UNCHANGED, 1, peer_change_reset_out},
-	{PEER_FLAG_MED_UNCHANGED, 1, peer_change_reset_out},
-	{PEER_FLAG_DEFAULT_ORIGINATE, 0, peer_change_none},
-	{PEER_FLAG_REMOVE_PRIVATE_AS, 1, peer_change_reset_out},
-	{PEER_FLAG_ALLOWAS_IN, 0, peer_change_reset_in},
-	{PEER_FLAG_ALLOWAS_IN_ORIGIN, 0, peer_change_reset_in},
-	{PEER_FLAG_ORF_PREFIX_SM, 1, peer_change_reset},
-	{PEER_FLAG_ORF_PREFIX_RM, 1, peer_change_reset},
-	{PEER_FLAG_MAX_PREFIX, 0, peer_change_none},
-	{PEER_FLAG_MAX_PREFIX_WARNING, 0, peer_change_none},
-	{PEER_FLAG_MAX_PREFIX_FORCE, 0, peer_change_none},
-	{PEER_FLAG_MAX_PREFIX_OUT, 0, peer_change_none},
-	{PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED, 0, peer_change_reset_out},
-	{PEER_FLAG_FORCE_NEXTHOP_SELF, 1, peer_change_reset_out},
-	{PEER_FLAG_REMOVE_PRIVATE_AS_ALL, 1, peer_change_reset_out},
-	{PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE, 1, peer_change_reset_out},
-	{PEER_FLAG_AS_OVERRIDE, 1, peer_change_reset_out},
-	{PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE, 1, peer_change_reset_out},
-	{PEER_FLAG_WEIGHT, 0, peer_change_reset_in},
-	{PEER_FLAG_DISABLE_ADDPATH_RX, 0, peer_change_none},
-	{PEER_FLAG_SOO, 0, peer_change_reset},
-	{PEER_FLAG_ACCEPT_OWN, 0, peer_change_reset},
-	{PEER_FLAG_SEND_EXT_COMMUNITY_RPKI, 1, peer_change_reset_out},
-	{PEER_FLAG_ADDPATH_RX_PATHS_LIMIT, 0, peer_change_none},
-	{0, 0, 0}};
+	{ PEER_FLAG_SEND_COMMUNITY, 1, peer_change_reset_out },
+	{ PEER_FLAG_SEND_EXT_COMMUNITY, 1, peer_change_reset_out },
+	{ PEER_FLAG_SEND_LARGE_COMMUNITY, 1, peer_change_reset_out },
+	{ PEER_FLAG_NEXTHOP_SELF, 1, peer_change_reset_out },
+	{ PEER_FLAG_REFLECTOR_CLIENT, 1, peer_change_reset },
+	{ PEER_FLAG_RSERVER_CLIENT, 1, peer_change_reset },
+	{ PEER_FLAG_SOFT_RECONFIG, 0, peer_change_reset_in },
+	{ PEER_FLAG_AS_PATH_UNCHANGED, 1, peer_change_reset_out },
+	{ PEER_FLAG_NEXTHOP_UNCHANGED, 1, peer_change_reset_out },
+	{ PEER_FLAG_MED_UNCHANGED, 1, peer_change_reset_out },
+	{ PEER_FLAG_DEFAULT_ORIGINATE, 0, peer_change_none },
+	{ PEER_FLAG_REMOVE_PRIVATE_AS, 1, peer_change_reset_out },
+	{ PEER_FLAG_ALLOWAS_IN, 0, peer_change_reset_in },
+	{ PEER_FLAG_ALLOWAS_IN_ORIGIN, 0, peer_change_reset_in },
+	{ PEER_FLAG_ORF_PREFIX_SM, 1, peer_change_reset },
+	{ PEER_FLAG_ORF_PREFIX_RM, 1, peer_change_reset },
+	{ PEER_FLAG_MAX_PREFIX, 0, peer_change_none },
+	{ PEER_FLAG_MAX_PREFIX_WARNING, 0, peer_change_none },
+	{ PEER_FLAG_MAX_PREFIX_FORCE, 0, peer_change_none },
+	{ PEER_FLAG_MAX_PREFIX_OUT, 0, peer_change_none },
+	{ PEER_FLAG_NEXTHOP_LOCAL_UNCHANGED, 0, peer_change_reset_out },
+	{ PEER_FLAG_FORCE_NEXTHOP_SELF, 1, peer_change_reset_out },
+	{ PEER_FLAG_REMOVE_PRIVATE_AS_ALL, 1, peer_change_reset_out },
+	{ PEER_FLAG_REMOVE_PRIVATE_AS_REPLACE, 1, peer_change_reset_out },
+	{ PEER_FLAG_AS_OVERRIDE, 1, peer_change_reset_out },
+	{ PEER_FLAG_REMOVE_PRIVATE_AS_ALL_REPLACE, 1, peer_change_reset_out },
+	{ PEER_FLAG_WEIGHT, 0, peer_change_reset_in },
+	{ PEER_FLAG_DISABLE_ADDPATH_RX, 0, peer_change_reset },
+	{ PEER_FLAG_SOO, 0, peer_change_reset },
+	{ PEER_FLAG_ACCEPT_OWN, 0, peer_change_reset },
+	{ PEER_FLAG_SEND_EXT_COMMUNITY_RPKI, 1, peer_change_reset_out },
+	{ PEER_FLAG_ADDPATH_RX_PATHS_LIMIT, 0, peer_change_none },
+	{ 0, 0, 0 }
+};
 
 /* Proper action set. */
 static int peer_flag_action_set(const struct peer_flag_action *action_list,

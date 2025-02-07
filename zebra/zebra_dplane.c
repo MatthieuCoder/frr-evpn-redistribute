@@ -7528,6 +7528,16 @@ static void dplane_thread_loop(struct event *event)
 		if (!zdplane_info.dg_run)
 			break;
 
+		/*
+		 * The yield should only happen after a bit of work has been
+		 * done but before we pull any new work off any provider
+		 * queue to continue looping.  This is a safe spot to
+		 * do so.
+		 */
+		if (event_should_yield(event)) {
+			reschedule = true;
+			break;
+		}
 		/* Locate next provider */
 		next_prov = dplane_prov_list_next(&zdplane_info.dg_providers,
 						  prov);
@@ -7591,11 +7601,6 @@ static void dplane_thread_loop(struct event *event)
 		if (IS_ZEBRA_DEBUG_DPLANE_DETAIL)
 			zlog_debug("dplane dequeues %d completed work from provider %s",
 				   counter, dplane_provider_get_name(prov));
-
-		if (event_should_yield(event)) {
-			reschedule = true;
-			break;
-		}
 
 		/* Locate next provider */
 		prov = next_prov;
@@ -7698,7 +7703,10 @@ static void zebra_dplane_init_internal(void)
 
 	dplane_prov_list_init(&zdplane_info.dg_providers);
 
-	dplane_ctx_list_init(&zdplane_info.dg_update_list);
+	frr_with_mutex (&zdplane_info.dg_mutex) {
+		dplane_ctx_list_init(&zdplane_info.dg_update_list);
+	}
+
 	zns_info_list_init(&zdplane_info.dg_zns_list);
 
 	zdplane_info.dg_updates_per_cycle = DPLANE_DEFAULT_NEW_WORK;

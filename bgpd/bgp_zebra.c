@@ -1674,11 +1674,23 @@ void bgp_zebra_announce_table(struct bgp *bgp, afi_t afi, safi_t safi)
 	for (dest = bgp_table_top(table); dest; dest = bgp_route_next(dest))
 		for (pi = bgp_dest_get_bgp_path_info(dest); pi; pi = pi->next)
 			if (CHECK_FLAG(pi->flags, BGP_PATH_SELECTED) &&
-			    (pi->type == ZEBRA_ROUTE_BGP
-			     && (pi->sub_type == BGP_ROUTE_NORMAL
-				 || pi->sub_type == BGP_ROUTE_IMPORTED)))
-				bgp_zebra_route_install(dest, pi, bgp, true,
-							NULL, false);
+			    (pi->type == ZEBRA_ROUTE_BGP && (pi->sub_type == BGP_ROUTE_NORMAL ||
+							     pi->sub_type == BGP_ROUTE_IMPORTED))) {
+				bool is_add = true;
+
+				if (bgp->table_map[afi][safi].name) {
+					struct attr local_attr = *pi->attr;
+					struct bgp_path_info local_info = *pi;
+
+					local_info.attr = &local_attr;
+
+					is_add = bgp_table_map_apply(bgp->table_map[afi][safi].map,
+								     bgp_dest_get_prefix(dest),
+								     &local_info);
+				}
+
+				bgp_zebra_route_install(dest, pi, bgp, is_add, NULL, false);
+			}
 }
 
 /* Announce routes of any bgp subtype of a table to zebra */
@@ -2042,11 +2054,34 @@ int bgp_redistribute_set(struct bgp *bgp, afi_t afi, int type,
 
 	/* Return if already redistribute flag is set. */
 	if (instance) {
-		if (redist_check_instance(&zclient->mi_redist[afi][type],
-					  instance))
-			return CMD_WARNING;
+		if (type == ZEBRA_ROUTE_TABLE_DIRECT) {
+			/*
+			 * When redistribution type is `table-direct` the
+			 * instance means `table identification`.
+			 *
+			 * `table_id` support 32bit integers, however since
+			 * `instance` is being overloaded to `table_id` it
+			 * will only be possible to use the first 65535
+			 * entries.
+			 *
+			 * Also the ZAPI must also support `int`
+			 * (see `zebra_redistribute_add`).
+			 */
+			struct redist_table_direct table = {
+				.table_id = instance,
+				.vrf_id = bgp->vrf_id,
+			};
+			if (redist_lookup_table_direct(&zclient->mi_redist[afi][type], &table) !=
+			    NULL)
+				return CMD_WARNING;
 
-		redist_add_instance(&zclient->mi_redist[afi][type], instance);
+			redist_add_table_direct(&zclient->mi_redist[afi][type], &table);
+		} else {
+			if (redist_check_instance(&zclient->mi_redist[afi][type], instance))
+				return CMD_WARNING;
+
+			redist_add_instance(&zclient->mi_redist[afi][type], instance);
+		}
 	} else {
 		if (vrf_bitmap_check(&zclient->redist[afi][type], bgp->vrf_id))
 			return CMD_WARNING;
@@ -2174,10 +2209,22 @@ int bgp_redistribute_unreg(struct bgp *bgp, afi_t afi, int type,
 
 	/* Return if zebra connection is disabled. */
 	if (instance) {
-		if (!redist_check_instance(&zclient->mi_redist[afi][type],
-					   instance))
-			return CMD_WARNING;
-		redist_del_instance(&zclient->mi_redist[afi][type], instance);
+		if (type == ZEBRA_ROUTE_TABLE_DIRECT) {
+			struct redist_table_direct table = {
+				.table_id = instance,
+				.vrf_id = bgp->vrf_id,
+			};
+			if (redist_lookup_table_direct(&zclient->mi_redist[afi][type], &table) ==
+			    NULL)
+				return CMD_WARNING;
+
+			redist_del_table_direct(&zclient->mi_redist[afi][type], &table);
+		} else {
+			if (!redist_check_instance(&zclient->mi_redist[afi][type], instance))
+				return CMD_WARNING;
+
+			redist_del_instance(&zclient->mi_redist[afi][type], instance);
+		}
 	} else {
 		if (!vrf_bitmap_check(&zclient->redist[afi][type], bgp->vrf_id))
 			return CMD_WARNING;

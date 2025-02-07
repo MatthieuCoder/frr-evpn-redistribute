@@ -2851,8 +2851,17 @@ bool subgroup_announce_check(struct bgp_dest *dest, struct bgp_path_info *pi,
 	 * If the extended community is non-transitive, strip it off,
 	 * unless it's a locally originated route (static, aggregate,
 	 * redistributed, etc.).
+	 * draft-uttaro-idr-bgp-oad says:
+	 * Extended communities which are non-transitive across an AS
+	 * boundary MAY be advertised over an EBGP-OAD session if allowed
+	 * by explicit policy configuration. If allowed, all the members
+	 * of the OAD SHOULD be configured to use the same criteria.
+	 * For example, the Origin Validation State Extended Community,
+	 * defined as non-transitive in [RFC8097], can be advertised to
+	 * peers in the same OAD.
 	 */
-	if (from->sort == BGP_PEER_EBGP && peer->sort == BGP_PEER_EBGP &&
+	if (from->sort == BGP_PEER_EBGP && from->sub_sort != BGP_PEER_EBGP_OAD &&
+	    peer->sort == BGP_PEER_EBGP && peer->sub_sort != BGP_PEER_EBGP_OAD &&
 	    pi->sub_type == BGP_ROUTE_NORMAL) {
 		struct ecommunity *new_ecomm;
 		struct ecommunity *old_ecomm;
@@ -3885,6 +3894,12 @@ static void bgp_process_main_one(struct bgp *bgp, struct bgp_dest *dest,
 					 BGP_PATH_ATTR_CHANGED);
 		UNSET_FLAG(new_select->flags, BGP_PATH_MULTIPATH_CHG);
 		UNSET_FLAG(new_select->flags, BGP_PATH_LINK_BW_CHG);
+	} else {
+		/*
+		 * Ensure that on uninstall that the INSTALL_PENDING
+		 * is no longer set
+		 */
+		UNSET_FLAG(dest->flags, BGP_NODE_FIB_INSTALL_PENDING);
 	}
 
 	/* call bmp hook for loc-rib route update / withdraw after flags were
@@ -4114,6 +4129,9 @@ static void process_eoiu_marker(struct bgp_dest *dest)
 			   subqueue2str(META_QUEUE_EOIU_MARKER));
 
 	bgp_process_main_one(info->bgp, NULL, 0, 0);
+
+	XFREE(MTYPE_BGP_EOIU_MARKER_INFO, info);
+	XFREE(MTYPE_BGP_NODE, dest);
 }
 
 /*
@@ -4304,6 +4322,7 @@ static void eoiu_marker_queue_free(struct meta_queue *mq, struct bgp_dest_queue 
 		XFREE(MTYPE_BGP_EOIU_MARKER_INFO, dest->info);
 		STAILQ_REMOVE_HEAD(l, pq);
 		STAILQ_NEXT(dest, pq) = NULL; /* complete unlink */
+		XFREE(MTYPE_BGP_NODE, dest);
 		mq->size--;
 	}
 }
@@ -10951,6 +10970,12 @@ void route_vty_out_detail(struct vty *vty, struct bgp *bgp, struct bgp_dest *bn,
 		else
 			vty_out(vty, ", (stale)");
 	}
+	if (bgp_path_suppressed(path)) {
+		if (json_paths)
+			json_object_boolean_true_add(json_path, "suppressed");
+		else
+			vty_out(vty, ", (suppressed)");
+	}
 
 	if (CHECK_FLAG(attr->flag, ATTR_FLAG_BIT(BGP_ATTR_AGGREGATOR))) {
 		if (json_paths) {
@@ -15239,7 +15264,7 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 				if (type == bgp_show_adj_route_advertised ||
 				    type == bgp_show_adj_route_received) {
 					if (first) {
-						vty_out(vty, "\"%s\":", rd_str);
+						vty_out(vty, "{\"%s\":", rd_str);
 						first = false;
 					} else {
 						vty_out(vty, ",\"%s\":", rd_str);
@@ -15253,6 +15278,8 @@ static int peer_adj_routes(struct vty *vty, struct peer *peer, afi_t afi,
 			output_count += output_count_per_rd;
 			filtered_count += filtered_count_per_rd;
 		}
+		if (first == false && json_routes)
+			vty_out(vty, "}");
 	} else {
 		show_adj_route(vty, peer, table, afi, safi, type, rmap_name,
 			       json, json_ar, show_flags, &header1, &header2,

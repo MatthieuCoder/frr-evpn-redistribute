@@ -268,6 +268,21 @@ struct redist_proto {
 	struct list *instances;
 };
 
+/**
+ * Redistribute table direct instance data structure: keeps the VRF
+ * that subscribed to the table ID.
+ *
+ * **NOTE**
+ * `table_id` is an integer because that is what the netlink interface
+ * uses for route attribute RTA_TABLE (32bit int), however the whole
+ * zclient API uses `unsigned short` (and CLI commands) so it will be
+ * limited to the range 1 to 65535.
+ */
+struct redist_table_direct {
+	vrf_id_t vrf_id;
+	int table_id;
+};
+
 struct zclient_capabilities {
 	uint32_t ecmp;
 	bool mpls_enabled;
@@ -924,6 +939,15 @@ extern void redist_add_instance(struct redist_proto *, unsigned short);
 extern void redist_del_instance(struct redist_proto *, unsigned short);
 extern void redist_del_all_instances(struct redist_proto *red);
 
+extern struct redist_table_direct *
+redist_lookup_table_direct(const struct redist_proto *red, const struct redist_table_direct *table);
+extern bool redist_table_direct_has_id(const struct redist_proto *red, int table_id);
+extern void redist_add_table_direct(struct redist_proto *red,
+				    const struct redist_table_direct *table);
+extern void redist_del_table_direct(struct redist_proto *red,
+				    const struct redist_table_direct *table);
+
+
 /*
  * Send to zebra that the specified vrf is using label to resolve
  * itself for L3VPN's.  Repeated calls of this function with
@@ -1144,6 +1168,9 @@ bool zapi_route_notify_decode(struct stream *s, struct prefix *p,
 			      uint32_t *tableid,
 			      enum zapi_route_notify_owner *note,
 			      afi_t *afi, safi_t *safi);
+bool zapi_route_notify_decode_srcdest(struct stream *s, struct prefix *p, struct prefix *src_p,
+				      uint32_t *tableid, enum zapi_route_notify_owner *note,
+				      afi_t *afi, safi_t *safi);
 bool zapi_rule_notify_decode(struct stream *s, uint32_t *seqno,
 			     uint32_t *priority, uint32_t *unique, char *ifname,
 			     enum zapi_rule_notify_owner *note);

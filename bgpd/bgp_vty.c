@@ -122,6 +122,12 @@ FRR_CFG_DEFAULT_BOOL(BGP_ENFORCE_FIRST_AS,
 	{ .val_bool = false, .match_version = "< 9.1", },
 	{ .val_bool = true },
 );
+FRR_CFG_DEFAULT_BOOL(BGP_RR_ALLOW_OUTBOUND_POLICY,
+	{ .val_bool = false },
+);
+FRR_CFG_DEFAULT_BOOL(BGP_COMPARE_AIGP,
+	{ .val_bool = false },
+);
 
 DEFINE_HOOK(bgp_inst_config_write,
 		(struct bgp *bgp, struct vty *vty),
@@ -622,6 +628,10 @@ int bgp_get_vty(struct bgp **bgp, as_t *as, const char *name,
 				 BGP_FLAG_DYNAMIC_CAPABILITY);
 		if (DFLT_BGP_ENFORCE_FIRST_AS)
 			SET_FLAG((*bgp)->flags, BGP_FLAG_ENFORCE_FIRST_AS);
+		if (DFLT_BGP_RR_ALLOW_OUTBOUND_POLICY)
+			SET_FLAG((*bgp)->flags, BGP_FLAG_RR_ALLOW_OUTBOUND_POLICY);
+		if (DFLT_BGP_COMPARE_AIGP)
+			SET_FLAG((*bgp)->flags, BGP_FLAG_COMPARE_AIGP);
 
 		ret = BGP_SUCCESS;
 	}
@@ -9206,21 +9216,12 @@ DEFUN(neighbor_disable_addpath_rx,
 	struct peer *peer;
 	afi_t afi = bgp_node_afi(vty);
 	safi_t safi = bgp_node_safi(vty);
-	int ret;
-	int action;
 
 	peer = peer_and_group_lookup_vty(vty, peer_str);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	action = bgp_addpath_capability_action(peer->addpath_type[afi][safi], 0);
-
-	ret = peer_af_flag_set_vty(vty, peer_str, afi, safi,
-				   PEER_FLAG_DISABLE_ADDPATH_RX);
-
-	bgp_capability_send(peer, afi, safi, CAPABILITY_CODE_ADDPATH, action);
-
-	return ret;
+	return peer_af_flag_set_vty(vty, peer_str, afi, safi, PEER_FLAG_DISABLE_ADDPATH_RX);
 }
 
 DEFUN(no_neighbor_disable_addpath_rx,
@@ -9235,21 +9236,12 @@ DEFUN(no_neighbor_disable_addpath_rx,
 	struct peer *peer;
 	afi_t afi = bgp_node_afi(vty);
 	safi_t safi = bgp_node_safi(vty);
-	int ret;
-	int action;
 
 	peer = peer_and_group_lookup_vty(vty, peer_str);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	action = bgp_addpath_capability_action(peer->addpath_type[afi][safi], 0);
-
-	ret = peer_af_flag_unset_vty(vty, peer_str, afi, safi,
-				     PEER_FLAG_DISABLE_ADDPATH_RX);
-
-	bgp_capability_send(peer, afi, safi, CAPABILITY_CODE_ADDPATH, action);
-
-	return ret;
+	return peer_af_flag_unset_vty(vty, peer_str, afi, safi, PEER_FLAG_DISABLE_ADDPATH_RX);
 }
 
 DEFUN (neighbor_addpath_tx_all_paths,
@@ -9261,15 +9253,12 @@ DEFUN (neighbor_addpath_tx_all_paths,
 {
 	int idx_peer = 1;
 	struct peer *peer;
-	afi_t afi = bgp_node_afi(vty);
-	safi_t safi = bgp_node_safi(vty);
 
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_ALL, 0);
-
+	bgp_addpath_set_peer_type(peer, bgp_node_afi(vty), bgp_node_safi(vty), BGP_ADDPATH_ALL, 0);
 	return CMD_SUCCESS;
 }
 
@@ -9289,20 +9278,18 @@ DEFUN (no_neighbor_addpath_tx_all_paths,
 {
 	int idx_peer = 2;
 	struct peer *peer;
-	afi_t afi = bgp_node_afi(vty);
-	safi_t safi = bgp_node_safi(vty);
 
 	peer = peer_and_group_lookup_vty(vty, argv[idx_peer]->arg);
 	if (!peer)
 		return CMD_WARNING_CONFIG_FAILED;
 
-	if (peer->addpath_type[afi][safi] != BGP_ADDPATH_ALL) {
+	if (peer->addpath_type[bgp_node_afi(vty)][bgp_node_safi(vty)] != BGP_ADDPATH_ALL) {
 		vty_out(vty,
 			"%% Peer not currently configured to transmit all paths.");
 		return CMD_WARNING_CONFIG_FAILED;
 	}
 
-	bgp_addpath_set_peer_type(peer, afi, safi, BGP_ADDPATH_NONE, 0);
+	bgp_addpath_set_peer_type(peer, bgp_node_afi(vty), bgp_node_safi(vty), BGP_ADDPATH_NONE, 0);
 
 	return CMD_SUCCESS;
 }
@@ -16704,9 +16691,9 @@ static int bgp_show_route_leak_vty(struct vty *vty, const char *name,
 						json_object_new_string(vname));
 			json_object_object_add(json, "exportToVrfs",
 					       json_export_vrfs);
-			json_object_string_addf(
-				json, "routeDistinguisher", "%s",
-				bgp->vpn_policy[afi].tovpn_rd_pretty);
+			json_object_string_addf(json, "routeDistinguisher",
+						BGP_RD_AS_FORMAT(bgp->asnotation),
+						&bgp->vpn_policy[afi].tovpn_rd);
 			dir = BGP_VPN_POLICY_DIR_TOVPN;
 			if (bgp->vpn_policy[afi].rtlist[dir]) {
 				ecom_str = ecommunity_ecom2str(
@@ -17598,12 +17585,6 @@ DEFUN (bgp_redistribute_ipv4_ospf,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		}
 		if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
 			    strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
@@ -17657,12 +17638,6 @@ DEFUN (bgp_redistribute_ipv4_ospf_rmap,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		}
 		if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
 			    strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
@@ -17720,12 +17695,6 @@ DEFUN (bgp_redistribute_ipv4_ospf_metric,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		}
 		if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
 			    strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
@@ -17790,12 +17759,6 @@ DEFUN (bgp_redistribute_ipv4_ospf_rmap_metric,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		}
 		if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
 			    strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
@@ -17865,13 +17828,7 @@ DEFUN (bgp_redistribute_ipv4_ospf_metric_rmap,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		} else if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
-				   strlen("table-direct")) == 0) {
+		if (strncmp(argv[idx_ospf_table]->arg, "table-direct", strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
 			if (instance == RT_TABLE_MAIN ||
 			    instance == RT_TABLE_LOCAL) {
@@ -17934,12 +17891,6 @@ DEFUN (no_bgp_redistribute_ipv4_ospf,
 	if (strncmp(argv[idx_ospf_table]->arg, "o", 1) == 0)
 		protocol = ZEBRA_ROUTE_OSPF;
 	else {
-		if (bgp->vrf_id != VRF_DEFAULT) {
-			vty_out(vty,
-				"%% Only default BGP instance can use '%s'\n",
-				argv[idx_ospf_table]->arg);
-			return CMD_WARNING_CONFIG_FAILED;
-		}
 		if (strncmp(argv[idx_ospf_table]->arg, "table-direct",
 			    strlen("table-direct")) == 0) {
 			protocol = ZEBRA_ROUTE_TABLE_DIRECT;
@@ -19839,14 +19790,19 @@ int bgp_config_write(struct vty *vty)
 			}
 		}
 
-		if (CHECK_FLAG(bgp->flags, BGP_FLAG_RR_ALLOW_OUTBOUND_POLICY)) {
-			vty_out(vty,
-				" bgp route-reflector allow-outbound-policy\n");
-		}
+		if (!!CHECK_FLAG(bgp->flags, BGP_FLAG_RR_ALLOW_OUTBOUND_POLICY) !=
+		    SAVE_BGP_RR_ALLOW_OUTBOUND_POLICY)
+			vty_out(vty, " %sbgp route-reflector allow-outbound-policy\n",
+				CHECK_FLAG(bgp->flags, BGP_FLAG_RR_ALLOW_OUTBOUND_POLICY) ? ""
+											  : "no ");
+
 		if (CHECK_FLAG(bgp->flags, BGP_FLAG_COMPARE_ROUTER_ID))
 			vty_out(vty, " bgp bestpath compare-routerid\n");
-		if (CHECK_FLAG(bgp->flags, BGP_FLAG_COMPARE_AIGP))
-			vty_out(vty, " bgp bestpath aigp\n");
+
+		if (!!CHECK_FLAG(bgp->flags, BGP_FLAG_COMPARE_AIGP) != SAVE_BGP_COMPARE_AIGP)
+			vty_out(vty, " %sbgp bestpath aigp\n",
+				CHECK_FLAG(bgp->flags, BGP_FLAG_COMPARE_AIGP) ? "" : "no ");
+
 		if (CHECK_FLAG(bgp->flags, BGP_FLAG_MED_CONFED)
 		    || CHECK_FLAG(bgp->flags, BGP_FLAG_MED_MISSING_AS_WORST)) {
 			vty_out(vty, " bgp bestpath med");
