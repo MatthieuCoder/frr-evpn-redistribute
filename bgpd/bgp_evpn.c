@@ -3898,9 +3898,7 @@ int bgp_evpn_route_entry_install_if_vrf_match(struct bgp *bgp_vrf,
 			return 0;
 
 		/* don't import hosts that are locally attached */
-		if (install && (bgp_evpn_skip_vrf_import_of_local_es(
-					bgp_vrf, evp, pi, install) ||
-				bgp_evpn_route_matches_macvrf_soo(pi, evp)))
+		if (install && bgp_evpn_route_matches_macvrf_soo(pi, evp))
 			return 0;
 
 		if (install)
@@ -4297,8 +4295,7 @@ static int install_uninstall_route_in_vrfs(struct bgp *bgp_def, afi_t afi,
 		int ret;
 
 		/* don't import hosts that are locally attached */
-		if (install && bgp_evpn_skip_vrf_import_of_local_es(
-				       bgp_vrf, evp, pi, install))
+		if (install)
 			return 0;
 
 		if (install)
