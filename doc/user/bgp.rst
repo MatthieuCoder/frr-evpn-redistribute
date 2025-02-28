@@ -1953,6 +1953,16 @@ Configuring Peers
    are not supporting this capability or supporting BGP Capabilities
    Negotiation RFC 2842.
 
+.. clicmd:: neighbor PEER capability link-local
+
+   Send the Link-Local Next Hop capability in the BGP OPEN message to the neighbor.
+   This is useful in data center environments where point-to-point (unnumbered) links
+   are utilized. This capability standardizes the operation of BGP over a
+   point-to-point links using link-local IPv6 addressing only.
+
+   Enabled by default for the ``datacenter`` profile. Also implicitly enabled
+   for unnumbered peers.
+
 .. clicmd:: neighbor <A.B.C.D|X:X::X:X|WORD> accept-own
 
    Enable handling of self-originated VPN routes containing ``accept-own`` community.
@@ -4638,13 +4648,16 @@ incoming/outgoing directions.
 
    If ``json`` option is specified, output is displayed in JSON format.
 
-.. clicmd:: show [ip] bgp [afi] [safi] [all] detail-routes
+.. clicmd:: show [ip] bgp [afi] [safi] [all] detail-routes [internal]
 
    Display the detailed version of all routes. The same format as using
    ``show [ip] bgp [afi] [safi] PREFIX``, but for the whole BGP table.
 
    If ``all`` option is specified, ``ip`` keyword is ignored and,
    routes displayed for all AFIs and SAFIs.
+
+   ``internal`` option is used to display internal data additionally. JSON
+   output is not supported with this option.
 
    If ``afi`` is specified, with ``all`` option, routes will be displayed for
    each SAFI in the selected AFI.

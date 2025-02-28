@@ -391,6 +391,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
    reports on the interface. Refer to the next `ip igmp` command for IGMP
    management.
 
+.. clicmd:: ip pim allowed-neighbors prefix-list PREFIX_LIST
+
+   Only establish sessions with PIM neighbors allowed by the prefix-list.
+
 .. clicmd:: ip pim use-source A.B.C.D
 
    If you have multiple addresses configured on a particular interface
@@ -424,6 +428,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
    interfaces on this interface. Join-groups on other interfaces will
    also be proxied. The default version is v3.
 
+.. clicmd:: ip igmp immediate-leave
+
+   Immediately leaves an IGMP group when receiving a IGMPv2 Leave packet.
+
 .. clicmd:: ip igmp query-interval (1-65535)
 
    Set the IGMP query interval that PIM will use.
@@ -436,6 +444,14 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 .. clicmd:: ip igmp version (2-3)
 
    Set the IGMP version used on this interface. The default value is 3.
+
+.. clicmd:: ip igmp max-groups (0-4294967295)
+
+   Set the maximum number of IGMP groups that the can be joined on an interface.
+
+.. clicmd:: ip igmp max-sources (0-4294967295)
+
+   Set the maximum number of IGMP sources to learn per group.
 
 .. clicmd:: ip multicast boundary oil WORD
 

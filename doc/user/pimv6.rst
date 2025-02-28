@@ -214,6 +214,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
    reports on the interface. Refer to the next ``ipv6 mld`` command for MLD
    management.
 
+.. clicmd:: ipv6 pim allowed-neighbors prefix-list PREFIX_LIST
+
+   Only establish sessions with PIM neighbors allowed by the prefix-list.
+
 .. clicmd:: ipv6 pim use-source X:X::X:X
 
    If you have multiple addresses configured on a particular interface
@@ -245,6 +249,10 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 
    Join multicast group or source-group on an interface.
 
+.. clicmd:: ipv6 mld immediate-leave
+
+   Immediately leaves a MLD group when receiving a MLDv1 Done packet.
+
 .. clicmd:: ipv6 mld query-interval (1-65535)
 
    Set the MLD query interval that PIM will use.
@@ -257,6 +265,14 @@ is in a vrf, enter the interface command with the vrf keyword at the end.
 .. clicmd:: ipv6 mld version (1-2)
 
    Set the MLD version used on this interface. The default value is 2.
+
+.. clicmd:: ipv6 mld max-groups (0-4294967295)
+
+   Set the maximum number of MLD groups that the can be joined on an interface.
+
+.. clicmd:: ipv6 mld max-sources (0-4294967295)
+
+   Set the maximum number of MLD sources to learn per group.
 
 .. clicmd:: ipv6 multicast boundary oil WORD
 
@@ -480,6 +496,10 @@ PIMv6 Clear Commands
 ====================
 
 Clear commands reset various variables.
+
+.. clicmd:: clear ipv6 mld [vrf NAME] interfaces
+
+   Reset learned multicast groups / sources.
 
 .. clicmd:: clear ipv6 mroute
 

@@ -127,6 +127,8 @@ static int nb_node_new_cb(const struct lysc_node *snode, void *arg)
 
 	if (module && module->ignore_cfg_cbs)
 		SET_FLAG(nb_node->flags, F_NB_NODE_IGNORE_CFG_CBS);
+	if (module && module->get_tree_locked)
+		SET_FLAG(nb_node->flags, F_NB_NODE_HAS_GET_TREE);
 
 	return YANG_ITER_CONTINUE;
 }
@@ -256,6 +258,7 @@ static unsigned int nb_node_validate_cbs(const struct nb_node *nb_node)
 
 {
 	unsigned int error = 0;
+	bool state_optional = CHECK_FLAG(nb_node->flags, F_NB_NODE_HAS_GET_TREE);
 
 	if (CHECK_FLAG(nb_node->flags, F_NB_NODE_IGNORE_CFG_CBS))
 		return error;
@@ -273,15 +276,15 @@ static unsigned int nb_node_validate_cbs(const struct nb_node *nb_node)
 	error += nb_node_validate_cb(nb_node, NB_CB_APPLY_FINISH,
 				     !!nb_node->cbs.apply_finish, true);
 	error += nb_node_validate_cb(nb_node, NB_CB_GET_ELEM,
-				     (nb_node->cbs.get_elem || nb_node->cbs.get), false);
+				     (nb_node->cbs.get_elem || nb_node->cbs.get), state_optional);
 	error += nb_node_validate_cb(nb_node, NB_CB_GET_NEXT,
 				     (nb_node->cbs.get_next ||
 				      (nb_node->snode->nodetype == LYS_LEAFLIST && nb_node->cbs.get)),
-				     false);
-	error += nb_node_validate_cb(nb_node, NB_CB_GET_KEYS,
-				     !!nb_node->cbs.get_keys, false);
-	error += nb_node_validate_cb(nb_node, NB_CB_LOOKUP_ENTRY,
-				     !!nb_node->cbs.lookup_entry, false);
+				     state_optional);
+	error += nb_node_validate_cb(nb_node, NB_CB_GET_KEYS, !!nb_node->cbs.get_keys,
+				     state_optional);
+	error += nb_node_validate_cb(nb_node, NB_CB_LOOKUP_ENTRY, !!nb_node->cbs.lookup_entry,
+				     state_optional);
 	error += nb_node_validate_cb(nb_node, NB_CB_RPC, !!nb_node->cbs.rpc,
 				     false);
 	error += nb_node_validate_cb(nb_node, NB_CB_NOTIFY,
@@ -516,20 +519,33 @@ void nb_config_diff_created(const struct lyd_node *dnode, uint32_t *seq,
 static void nb_config_diff_deleted(const struct lyd_node *dnode, uint32_t *seq,
 				   struct nb_config_cbs *changes)
 {
+	struct nb_node *nb_node = dnode->schema->priv;
+	struct lyd_node *child;
+	bool recursed = false;
+
 	/* Ignore unimplemented nodes. */
-	if (!dnode->schema->priv)
+	if (!nb_node)
 		return;
+
+	/*
+	 * If the CB structure indicates it (recurse flag set), call the destroy
+	 * callbacks for the children of a containment node.
+	 */
+	if (CHECK_FLAG(dnode->schema->nodetype, LYS_CONTAINER | LYS_LIST) &&
+	    CHECK_FLAG(nb_node->cbs.flags, F_NB_CB_DESTROY_RECURSE)) {
+		recursed = true;
+		LY_LIST_FOR (lyd_child(dnode), child) {
+			nb_config_diff_deleted(child, seq, changes);
+		}
+	}
 
 	if (nb_cb_operation_is_valid(NB_CB_DESTROY, dnode->schema))
 		nb_config_diff_add_change(changes, NB_CB_DESTROY, seq, dnode);
-	else if (CHECK_FLAG(dnode->schema->nodetype, LYS_CONTAINER)) {
-		struct lyd_node *child;
-
+	else if (CHECK_FLAG(dnode->schema->nodetype, LYS_CONTAINER) && !recursed) {
 		/*
-		 * Non-presence containers need special handling since they
-		 * don't have "destroy" callbacks. In this case, what we need to
-		 * do is to call the "destroy" callbacks of their child nodes
-		 * when applicable (i.e. optional nodes).
+		 * If we didn't already above, call destroy on the children of
+		 * this container (it's an NP container) as NP containers have
+		 * no destroy CB themselves.
 		 */
 		LY_LIST_FOR (lyd_child(dnode), child) {
 			nb_config_diff_deleted(child, seq, changes);
@@ -2717,7 +2733,7 @@ void nb_init(struct event_loop *tm,
 	     const struct frr_yang_module_info *const modules[],
 	     size_t nmodules, bool db_enabled, bool load_library)
 {
-	struct yang_module *loaded[nmodules], **loadedp = loaded;
+	struct yang_module *loaded[nmodules];
 
 	/*
 	 * Currently using this explicit compile feature in libyang2 leads to
@@ -2737,8 +2753,8 @@ void nb_init(struct event_loop *tm,
 	for (size_t i = 0; i < nmodules; i++) {
 		DEBUGD(&nb_dbg_events, "northbound: loading %s.yang",
 		       modules[i]->name);
-		*loadedp++ = yang_module_load(modules[i]->name,
-					      modules[i]->features);
+		loaded[i] = yang_module_load(modules[i]->name, modules[i]->features);
+		loaded[i]->frr_info = modules[i];
 	}
 
 	if (explicit_compile)

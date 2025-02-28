@@ -1612,6 +1612,56 @@ DEFPY (interface_no_ipv6_mld_version,
 				    "frr-routing:ipv6");
 }
 
+DEFPY_YANG(interface_ipv6_mld_limits,
+           interface_ipv6_mld_limits_cmd,
+           "[no] ipv6 mld <max-sources$do_src (0-4294967295)$val"
+	     "|max-groups$do_grp (0-4294967295)$val>",
+           NO_STR
+           IPV6_STR
+           IFACE_MLD_STR
+           "Limit number of MLDv2 sources to track\n"
+           "Permitted number of sources\n"
+           "Limit number of MLD group memberships to track\n"
+           "Permitted number of groups\n")
+{
+	const char *xpath;
+
+	assert(do_src || do_grp);
+	if (do_src)
+		xpath = "./max-sources";
+	else
+		xpath = "./max-groups";
+
+	if (no)
+		nb_cli_enqueue_change(vty, xpath, NB_OP_DESTROY, NULL);
+	else
+		nb_cli_enqueue_change(vty, xpath, NB_OP_MODIFY, val_str);
+
+	return nb_cli_apply_changes(vty, FRR_GMP_INTERFACE_XPATH, FRR_PIM_AF_XPATH_VAL);
+}
+
+ALIAS_YANG(interface_ipv6_mld_limits,
+           no_interface_ipv6_mld_limits_cmd,
+           "no ipv6 mld <max-sources$do_src|max-groups$do_grp>",
+           NO_STR
+           IPV6_STR
+           IFACE_MLD_STR
+           "Limit number of MLDv2 sources to track\n"
+           "Limit number of MLD group memberships to track\n")
+
+DEFPY_YANG(interface_ipv6_mld_immediate_leave,
+           interface_ipv6_mld_immediate_leave_cmd,
+           "[no] ipv6 mld immediate-leave",
+           NO_STR
+           IPV6_STR
+           IFACE_MLD_STR
+           "Immediately drop group memberships on receiving Leave (MLDv1 only)\n")
+{
+	nb_cli_enqueue_change(vty, "./immediate-leave", NB_OP_MODIFY, no ? "false" : "true");
+
+	return nb_cli_apply_changes(vty, FRR_GMP_INTERFACE_XPATH, FRR_PIM_AF_XPATH_VAL);
+}
+
 DEFPY (interface_ipv6_mld_query_interval,
        interface_ipv6_mld_query_interval_cmd,
        "ipv6 mld query-interval (1-65535)$q_interval",
@@ -1752,6 +1802,34 @@ DEFPY (interface_no_ipv6_mld_last_member_query_interval,
 {
 	return gm_process_no_last_member_query_interval_cmd(vty);
 }
+
+DEFPY_YANG(interface_ipv6_pim_neighbor_prefix_list,
+           interface_ipv6_pim_neighbor_prefix_list_cmd,
+           "[no] ipv6 pim allowed-neighbors prefix-list PREFIXLIST6_NAME$prefix_list",
+           NO_STR
+           IP_STR
+           PIM_STR
+           "Restrict allowed PIM neighbors\n"
+           "Use prefix-list to filter neighbors\n"
+           "Name of a prefix-list\n")
+{
+	if (no)
+		nb_cli_enqueue_change(vty, "./neighbor-filter-prefix-list", NB_OP_DESTROY, NULL);
+	else
+		nb_cli_enqueue_change(vty, "./neighbor-filter-prefix-list", NB_OP_MODIFY,
+				      prefix_list);
+
+	return nb_cli_apply_changes(vty, FRR_PIM_INTERFACE_XPATH, FRR_PIM_AF_XPATH_VAL);
+}
+
+ALIAS(interface_ipv6_pim_neighbor_prefix_list,
+      interface_no_ipv6_pim_neighbor_prefix_list_cmd,
+      "no ipv6 pim allowed-neighbors [prefix-list]",
+      NO_STR
+      IP_STR
+      PIM_STR
+      "Restrict allowed PIM neighbors\n"
+      "Use prefix-list to filter neighbors\n")
 
 DEFPY (show_ipv6_pim_rp,
        show_ipv6_pim_rp_cmd,
@@ -2341,6 +2419,32 @@ DEFPY (show_ipv6_pim_bsrp,
 	return pim_show_group_rp_mappings_info_helper(vrf, vty, !!json);
 }
 
+DEFPY(clear_ipv6_mld_interfaces,
+      clear_ipv6_mld_interfaces_cmd,
+      "clear ipv6 mld [vrf NAME$vrf_name] interfaces",
+      CLEAR_STR
+      IPV6_STR
+      "MLD clear commands\n"
+      VRF_CMD_HELP_STR
+      "Reset MLD interfaces\n")
+{
+	struct interface *ifp;
+	struct vrf *vrf;
+
+	vrf = vrf_name ? vrf_lookup_by_name(vrf_name) : vrf_lookup_by_id(VRF_DEFAULT);
+	if (!vrf) {
+		vty_out(vty, "Specified VRF: %s does not exist\n", vrf_name);
+		return CMD_WARNING;
+	}
+
+	FOR_ALL_INTERFACES (vrf, ifp)
+		pim_if_addr_del_all(ifp);
+	FOR_ALL_INTERFACES (vrf, ifp)
+		pim_if_addr_add_all(ifp);
+
+	return CMD_SUCCESS;
+}
+
 DEFPY (clear_ipv6_pim_statistics,
        clear_ipv6_pim_statistics_cmd,
        "clear ipv6 pim statistics [vrf NAME]$name",
@@ -2865,6 +2969,9 @@ void pim_cmd_init(void)
 	install_element(INTERFACE_NODE, &interface_no_ipv6_pim_boundary_oil_cmd);
 	install_element(INTERFACE_NODE, &interface_ipv6_mroute_cmd);
 	install_element(INTERFACE_NODE, &interface_no_ipv6_mroute_cmd);
+	install_element(INTERFACE_NODE, &interface_ipv6_mld_limits_cmd);
+	install_element(INTERFACE_NODE, &no_interface_ipv6_mld_limits_cmd);
+
 	/* Install BSM command */
 	install_element(INTERFACE_NODE, &ipv6_pim_bsm_cmd);
 	install_element(INTERFACE_NODE, &no_ipv6_pim_bsm_cmd);
@@ -2878,6 +2985,7 @@ void pim_cmd_init(void)
 	install_element(INTERFACE_NODE, &interface_ipv6_mld_static_group_cmd);
 	install_element(INTERFACE_NODE, &interface_ipv6_mld_version_cmd);
 	install_element(INTERFACE_NODE, &interface_no_ipv6_mld_version_cmd);
+	install_element(INTERFACE_NODE, &interface_ipv6_mld_immediate_leave_cmd);
 	install_element(INTERFACE_NODE, &interface_ipv6_mld_query_interval_cmd);
 	install_element(INTERFACE_NODE,
 			&interface_no_ipv6_mld_query_interval_cmd);
@@ -2893,6 +3001,8 @@ void pim_cmd_init(void)
 			&interface_ipv6_mld_last_member_query_interval_cmd);
 	install_element(INTERFACE_NODE,
 			&interface_no_ipv6_mld_last_member_query_interval_cmd);
+	install_element(INTERFACE_NODE, &interface_ipv6_pim_neighbor_prefix_list_cmd);
+	install_element(INTERFACE_NODE, &interface_no_ipv6_pim_neighbor_prefix_list_cmd);
 
 	install_element(VIEW_NODE, &show_ipv6_pim_rp_cmd);
 	install_element(VIEW_NODE, &show_ipv6_pim_rp_vrf_all_cmd);
@@ -2935,6 +3045,7 @@ void pim_cmd_init(void)
 	install_element(VIEW_NODE, &show_ipv6_pim_bsr_cmd);
 	install_element(VIEW_NODE, &show_ipv6_pim_bsm_db_cmd);
 	install_element(VIEW_NODE, &show_ipv6_pim_bsrp_cmd);
+	install_element(ENABLE_NODE, &clear_ipv6_mld_interfaces_cmd);
 	install_element(ENABLE_NODE, &clear_ipv6_pim_statistics_cmd);
 	install_element(ENABLE_NODE, &clear_ipv6_mroute_cmd);
 	install_element(ENABLE_NODE, &clear_ipv6_pim_oil_cmd);

@@ -315,6 +315,13 @@ const struct frr_yang_module_info frr_pim_info = {
 			}
 		},
 		{
+			.xpath = "/frr-interface:lib/interface/frr-pim:pim/address-family/neighbor-filter-prefix-list",
+			.cbs = {
+				.modify = lib_interface_pim_address_family_nbr_plist_modify,
+				.destroy = lib_interface_pim_address_family_nbr_plist_destroy,
+			}
+		},
+		{
 			.xpath = "/frr-interface:lib/interface/frr-pim:pim/address-family/bfd",
 			.cbs = {
 				.create = lib_interface_pim_address_family_bfd_create,
@@ -725,13 +732,31 @@ const struct frr_yang_module_info frr_gmp_info = {
 				.destroy = lib_interface_gmp_address_family_join_group_destroy,
 			}
 		},
+		{
+			.xpath = "/frr-interface:lib/interface/frr-gmp:gmp/address-family/max-sources",
+			.cbs = {
+				.modify = lib_interface_gm_max_sources_modify,
+			}
+		},
+		{
+			.xpath = "/frr-interface:lib/interface/frr-gmp:gmp/address-family/max-groups",
+			.cbs = {
+				.modify = lib_interface_gm_max_groups_modify,
+			}
+		},
 				{
 			.xpath = "/frr-interface:lib/interface/frr-gmp:gmp/address-family/proxy",
 			.cbs = {
 				.modify = lib_interface_gmp_address_family_proxy_modify,
 			}
 		},
-{
+		{
+			.xpath = "/frr-interface:lib/interface/frr-gmp:gmp/address-family/immediate-leave",
+			.cbs = {
+				.modify = lib_interface_gmp_immediate_leave_modify,
+			}
+		},
+		{
 			.xpath = "/frr-interface:lib/interface/frr-gmp:gmp/address-family/static-group",
 			.cbs = {
 				.create = lib_interface_gmp_address_family_static_group_create,

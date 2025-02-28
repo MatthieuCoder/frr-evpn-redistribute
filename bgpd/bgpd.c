@@ -1575,6 +1575,9 @@ struct peer *peer_new(struct bgp *bgp)
 	if (CHECK_FLAG(bgp->flags, BGP_FLAG_SOFT_VERSION_CAPABILITY))
 		peer_flag_set(peer, PEER_FLAG_CAPABILITY_SOFT_VERSION);
 
+	if (CHECK_FLAG(bgp->flags, BGP_FLAG_LINK_LOCAL_CAPABILITY))
+		peer_flag_set(peer, PEER_FLAG_CAPABILITY_LINK_LOCAL);
+
 	if (CHECK_FLAG(bgp->flags, BGP_FLAG_DYNAMIC_CAPABILITY))
 		peer_flag_set(peer, PEER_FLAG_DYNAMIC_CAPABILITY);
 
@@ -2964,6 +2967,11 @@ static void peer_group2peer_config_copy(struct peer_group *group,
 			SET_FLAG(peer->flags,
 				 PEER_FLAG_DYNAMIC_CAPABILITY);
 
+	/* capability link-local apply */
+	if (!CHECK_FLAG(peer->flags_override, PEER_FLAG_CAPABILITY_LINK_LOCAL))
+		if (CHECK_FLAG(conf->flags, PEER_FLAG_CAPABILITY_LINK_LOCAL))
+			SET_FLAG(peer->flags, PEER_FLAG_CAPABILITY_LINK_LOCAL);
+
 	/* password apply */
 	if (!CHECK_FLAG(peer->flags_override, PEER_FLAG_PASSWORD))
 		PEER_STR_ATTR_INHERIT(peer, group, password,
@@ -3404,13 +3412,15 @@ static struct bgp *bgp_create(as_t *as, const char *name,
 	afi_t afi;
 	safi_t safi;
 
-	if (hidden) {
+	if (hidden)
 		bgp = bgp_old;
-		goto peer_init;
-	}
+	else
+		bgp = XCALLOC(MTYPE_BGP, sizeof(struct bgp));
 
-	bgp = XCALLOC(MTYPE_BGP, sizeof(struct bgp));
 	bgp->as = *as;
+
+	if (bgp->as_pretty)
+		XFREE(MTYPE_BGP_NAME, bgp->as_pretty);
 	if (as_pretty)
 		bgp->as_pretty = XSTRDUP(MTYPE_BGP_NAME, as_pretty);
 	else
@@ -3421,6 +3431,9 @@ static struct bgp *bgp_create(as_t *as, const char *name,
 		SET_FLAG(bgp->config, BGP_CONFIG_ASNOTATION);
 	} else
 		asn_str2asn_notation(bgp->as_pretty, NULL, &bgp->asnotation);
+
+	if (hidden)
+		goto peer_init;
 
 	if (BGP_DEBUG(zebra, ZEBRA)) {
 		if (inst_type == BGP_INSTANCE_TYPE_DEFAULT)
@@ -3560,7 +3573,7 @@ peer_init:
 	/* printable name we can use in debug messages */
 	if (inst_type == BGP_INSTANCE_TYPE_DEFAULT && !hidden) {
 		bgp->name_pretty = XSTRDUP(MTYPE_BGP_NAME, "VRF default");
-	} else {
+	} else if (!hidden) {
 		const char *n;
 		int len;
 
@@ -3763,7 +3776,7 @@ int bgp_lookup_by_as_name_type(struct bgp **bgp_val, as_t *as, const char *as_pr
 		/* Handle AS number change */
 		if (bgp->as != *as) {
 			if (hidden || CHECK_FLAG(bgp->vrf_flags, BGP_VRF_AUTO)) {
-				if (force_config == false && hidden) {
+				if (hidden) {
 					bgp_create(as, name, inst_type,
 						   as_pretty, asnotation, bgp,
 						   hidden);
@@ -4062,8 +4075,18 @@ int bgp_delete(struct bgp *bgp)
 		vpn_leak_zebra_vrf_sid_withdraw(bgp, afi);
 	}
 
+	/* release auto vpn labels */
 	bgp_vpn_release_label(bgp, AFI_IP, true);
 	bgp_vpn_release_label(bgp, AFI_IP6, true);
+
+	/* release manual vpn labels */
+	for (afi = AFI_IP; afi < AFI_MAX; afi++) {
+		if (!CHECK_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_LABEL_MANUAL_REG))
+			continue;
+		bgp_zebra_release_label_range(bgp->vpn_policy[afi].tovpn_label,
+					      bgp->vpn_policy[afi].tovpn_label);
+		UNSET_FLAG(bgp->vpn_policy[afi].flags, BGP_VPN_POLICY_TOVPN_LABEL_MANUAL_REG);
+	}
 
 	hook_call(bgp_inst_delete, bgp);
 
@@ -4246,12 +4269,11 @@ int bgp_delete(struct bgp *bgp)
 			bgp_set_evpn(bgp_get_default());
 	}
 
-	if (bgp->process_queue)
-		work_queue_free_and_null(&bgp->process_queue);
-
-	if (!IS_BGP_INSTANCE_HIDDEN(bgp))
+	if (!IS_BGP_INSTANCE_HIDDEN(bgp)) {
+		if (bgp->process_queue)
+			work_queue_free_and_null(&bgp->process_queue);
 		bgp_unlock(bgp); /* initial reference */
-	else {
+	} else {
 		for (afi = AFI_IP; afi < AFI_MAX; afi++) {
 			enum vpn_policy_direction dir;
 
@@ -4834,6 +4856,7 @@ static const struct peer_flag_action peer_flag_action_list[] = {
 	{PEER_FLAG_EXTENDED_LINK_BANDWIDTH, 0, peer_change_none},
 	{PEER_FLAG_LONESOUL, 0, peer_change_reset_out},
 	{PEER_FLAG_TCP_MSS, 0, peer_change_none},
+	{PEER_FLAG_CAPABILITY_LINK_LOCAL, 0, peer_change_none},
 	{0, 0, 0}};
 
 static const struct peer_flag_action peer_af_flag_action_list[] = {
@@ -4921,7 +4944,10 @@ static int peer_flag_action_set(const struct peer_flag_action *action_list,
 
 static void peer_flag_modify_action(struct peer *peer, uint64_t flag)
 {
-	if (flag == PEER_FLAG_DYNAMIC_CAPABILITY)
+	if (flag == PEER_FLAG_DYNAMIC_CAPABILITY || flag == PEER_FLAG_CAPABILITY_ENHE ||
+	    flag == PEER_FLAG_CAPABILITY_FQDN || flag == PEER_FLAG_CAPABILITY_SOFT_VERSION ||
+	    flag == PEER_FLAG_DONT_CAPABILITY || flag == PEER_FLAG_OVERRIDE_CAPABILITY ||
+	    flag == PEER_FLAG_STRICT_CAP_MATCH || flag == PEER_FLAG_CAPABILITY_LINK_LOCAL)
 		peer->last_reset = PEER_DOWN_CAPABILITY_CHANGE;
 	else if (flag == PEER_FLAG_PASSIVE)
 		peer->last_reset = PEER_DOWN_PASSIVE_CHANGE;

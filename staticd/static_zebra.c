@@ -323,6 +323,10 @@ void static_zebra_nht_register(struct static_nexthop *nh, bool reg)
 
 	if (!static_zebra_nht_get_prefix(nh, &lookup.nh))
 		return;
+
+	if (nh->nh_vrf_id == VRF_UNKNOWN)
+		return;
+
 	lookup.nh_vrf_id = nh->nh_vrf_id;
 	lookup.safi = si->safi;
 
@@ -615,6 +619,9 @@ void static_zebra_srv6_sid_install(struct static_srv6_sid *sid)
 	struct seg6local_context ctx = {};
 	struct interface *ifp = NULL;
 	struct vrf *vrf;
+	struct prefix_ipv6 sid_block = {};
+	struct prefix_ipv6 locator_block = {};
+	struct prefix_ipv6 sid_locator = {};
 
 	if (!sid)
 		return;
@@ -628,8 +635,19 @@ void static_zebra_srv6_sid_install(struct static_srv6_sid *sid)
 	}
 
 	switch (sid->behavior) {
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_PSP);
+		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END:
 		action = ZEBRA_SEG6_LOCAL_ACTION_END;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END;
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_PSP);
+		ctx.flv.lcblock_len = sid->locator->block_bits_length;
+		ctx.flv.lcnode_func_len = sid->locator->node_bits_length;
 		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID:
 		action = ZEBRA_SEG6_LOCAL_ACTION_END;
@@ -688,18 +706,56 @@ void static_zebra_srv6_sid_install(struct static_srv6_sid *sid)
 			return;
 		}
 		break;
-	case SRV6_ENDPOINT_BEHAVIOR_END_X:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID:
+		action = ZEBRA_SEG6_LOCAL_ACTION_END_X;
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to install SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		SET_SRV6_FLV_OP(ctx.flv.flv_ops, ZEBRA_SEG6_LOCAL_FLV_OP_NEXT_CSID);
+		ctx.flv.lcblock_len = sid->locator->block_bits_length;
+		ctx.flv.lcnode_func_len = sid->locator->node_bits_length;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 		zlog_warn("unsupported behavior: %u", sid->behavior);
 		break;
 	}
 
-	ctx.block_len = sid->locator->block_bits_length;
-	ctx.node_len = sid->locator->node_bits_length;
-	ctx.function_len = sid->locator->function_bits_length;
-	ctx.argument_len = sid->locator->argument_bits_length;
+	sid_block = sid->addr;
+	sid_block.prefixlen = sid->locator->block_bits_length;
+	apply_mask(&sid_block);
+
+	locator_block = sid->locator->prefix;
+	locator_block.prefixlen = sid->locator->block_bits_length;
+	apply_mask(&locator_block);
+
+	if (prefix_same(&sid_block, &locator_block))
+		ctx.block_len = sid->locator->block_bits_length;
+	else {
+		zlog_warn("SID block %pFX does not match locator block %pFX", &sid_block,
+			  &locator_block);
+		return;
+	}
+
+	sid_locator = sid->addr;
+	sid_locator.prefixlen = sid->locator->block_bits_length + sid->locator->node_bits_length;
+	apply_mask(&sid_locator);
+
+	if (prefix_same(&sid_locator, &sid->locator->prefix))
+		ctx.node_len = sid->locator->node_bits_length;
+
+	ctx.function_len = sid->addr.prefixlen - (ctx.block_len + ctx.node_len);
 
 	/* Attach the SID to the SRv6 interface */
 	if (!ifp) {
@@ -724,6 +780,9 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 	struct interface *ifp = NULL;
 	struct seg6local_context ctx = {};
 	struct vrf *vrf;
+	struct prefix_ipv6 sid_block = {};
+	struct prefix_ipv6 locator_block = {};
+	struct prefix_ipv6 sid_locator = {};
 
 	if (!sid)
 		return;
@@ -738,7 +797,9 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 
 	switch (sid->behavior) {
 	case SRV6_ENDPOINT_BEHAVIOR_END:
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP:
 		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT6:
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT6_USID:
@@ -785,8 +846,22 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 			return;
 		}
 		break;
-	case SRV6_ENDPOINT_BEHAVIOR_END_X:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID:
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to install SID %pFX: failed to get interface %s",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 		zlog_warn("unsupported behavior: %u", sid->behavior);
@@ -803,10 +878,30 @@ void static_zebra_srv6_sid_uninstall(struct static_srv6_sid *sid)
 		}
 	}
 
-	ctx.block_len = sid->locator->block_bits_length;
-	ctx.node_len = sid->locator->node_bits_length;
-	ctx.function_len = sid->locator->function_bits_length;
-	ctx.argument_len = sid->locator->argument_bits_length;
+	sid_block = sid->addr;
+	sid_block.prefixlen = sid->locator->block_bits_length;
+	apply_mask(&sid_block);
+
+	locator_block = sid->locator->prefix;
+	locator_block.prefixlen = sid->locator->block_bits_length;
+	apply_mask(&locator_block);
+
+	if (prefix_same(&sid_block, &locator_block))
+		ctx.block_len = sid->locator->block_bits_length;
+	else {
+		zlog_warn("SID block %pFX does not match locator block %pFX", &sid_block,
+			  &locator_block);
+		return;
+	}
+
+	sid_locator = sid->addr;
+	sid_locator.prefixlen = sid->locator->block_bits_length + sid->locator->node_bits_length;
+	apply_mask(&sid_locator);
+
+	if (prefix_same(&sid_locator, &sid->locator->prefix))
+		ctx.node_len = sid->locator->node_bits_length;
+
+	ctx.function_len = sid->addr.prefixlen - (ctx.block_len + ctx.node_len);
 
 	static_zebra_send_localsid(ZEBRA_ROUTE_DELETE, &sid->addr.prefix, sid->addr.prefixlen,
 				   ifp->ifindex, action, &ctx);
@@ -819,6 +914,7 @@ extern void static_zebra_request_srv6_sid(struct static_srv6_sid *sid)
 	struct srv6_sid_ctx ctx = {};
 	int ret = 0;
 	struct vrf *vrf;
+	struct interface *ifp;
 
 	if (!sid)
 		return;
@@ -826,7 +922,9 @@ extern void static_zebra_request_srv6_sid(struct static_srv6_sid *sid)
 	/* convert `srv6_endpoint_behavior_codepoint` to `seg6local_action_t` */
 	switch (sid->behavior) {
 	case SRV6_ENDPOINT_BEHAVIOR_END:
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP:
 		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END;
 		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT6:
@@ -868,8 +966,24 @@ extern void static_zebra_request_srv6_sid(struct static_srv6_sid *sid)
 		}
 
 		break;
-	case SRV6_ENDPOINT_BEHAVIOR_END_X:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_X;
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 		zlog_warn("unsupported behavior: %u", sid->behavior);
@@ -887,6 +1001,7 @@ extern void static_zebra_release_srv6_sid(struct static_srv6_sid *sid)
 	struct srv6_sid_ctx ctx = {};
 	struct vrf *vrf;
 	int ret = 0;
+	struct interface *ifp;
 
 	if (!sid || !CHECK_FLAG(sid->flags, STATIC_FLAG_SRV6_SID_VALID))
 		return;
@@ -894,7 +1009,9 @@ extern void static_zebra_release_srv6_sid(struct static_srv6_sid *sid)
 	/* convert `srv6_endpoint_behavior_codepoint` to `seg6local_action_t` */
 	switch (sid->behavior) {
 	case SRV6_ENDPOINT_BEHAVIOR_END:
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP:
 	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP:
 		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END;
 		break;
 	case SRV6_ENDPOINT_BEHAVIOR_END_DT6:
@@ -936,8 +1053,24 @@ extern void static_zebra_release_srv6_sid(struct static_srv6_sid *sid)
 		}
 
 		break;
-	case SRV6_ENDPOINT_BEHAVIOR_END_X:
 	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID:
+		ctx.behavior = ZEBRA_SEG6_LOCAL_ACTION_END_X;
+		ctx.nh6 = sid->attributes.nh6;
+		ifp = if_lookup_by_name(sid->attributes.ifname, VRF_DEFAULT);
+		if (!ifp) {
+			zlog_warn("Failed to request SRv6 SID %pFX: interface %s does not exist",
+				  &sid->addr, sid->attributes.ifname);
+			return;
+		}
+		ctx.ifindex = ifp->ifindex;
+		break;
+	case SRV6_ENDPOINT_BEHAVIOR_END_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_NEXT_CSID_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_PSP_USD:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP:
+	case SRV6_ENDPOINT_BEHAVIOR_END_X_NEXT_CSID_PSP_USD:
 	case SRV6_ENDPOINT_BEHAVIOR_OPAQUE:
 	case SRV6_ENDPOINT_BEHAVIOR_RESERVED:
 		zlog_warn("unsupported behavior: %u", sid->behavior);
@@ -1152,6 +1285,9 @@ static int static_zebra_srv6_sid_notify(ZAPI_CALLBACK_ARGS)
 				 srv6_sid_ctx2str(buf, sizeof(buf), &ctx));
 			return 0;
 		}
+
+		if (!IPV6_ADDR_SAME(&ctx.nh6, &in6addr_any))
+			sid->attributes.nh6 = ctx.nh6;
 
 		SET_FLAG(sid->flags, STATIC_FLAG_SRV6_SID_VALID);
 
